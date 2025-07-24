@@ -34,7 +34,7 @@ import skvideo.io
 from omegaconf import OmegaConf
 import scipy.spatial.transform as st
 from diffusion_policy.real_world.real_env import RealEnv
-from diffusion_policy.real_world.spacemouse_shared_memory import Spacemouse
+# from diffusion_policy.real_world.spacemouse_shared_memory import Spacemouse
 from diffusion_policy.common.precise_sleep import precise_wait
 from diffusion_policy.real_world.real_inference_util import (
     get_real_obs_resolution, 
@@ -86,17 +86,19 @@ def main(input, output, robot_ip, match_dataset, match_episode,
     workspace = cls(cfg)
     workspace: BaseWorkspace
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-
+    print(f'[zyu] Loaded {cfg.name} policy from {ckpt_path}')
+    print(f'[zyu] workspace: {workspace}') # TrainDiffusionUnetHybridWorkspace
     # hacks for method-specific setup.
     action_offset = 0
     delta_action = False
+    print(f'[zyu] cfg.name: {cfg.name}')
     if 'diffusion' in cfg.name:
         # diffusion model
+        # DiffusionUnetHybridImagePolicy used here
         policy: BaseImagePolicy
         policy = workspace.model
         if cfg.training.use_ema:
             policy = workspace.ema_model
-
         device = torch.device('cuda')
         policy.eval().to(device)
 
@@ -133,7 +135,8 @@ def main(input, output, robot_ip, match_dataset, match_episode,
 
     # setup experiment
     dt = 1/frequency
-
+    # cfg.task.shape_meta: {'obs': {'image': {'shape': [3, 96, 96], 'type': 'rgb'}, 'agent_pos': {'shape': [2], 'type': 'low_dim'}}, 'action': {'shape': [2]}}
+    print(f'[zyu] cfg.task.shape_meta: {cfg.task.shape_meta}')
     obs_res = get_real_obs_resolution(cfg.task.shape_meta)
     n_obs_steps = cfg.n_obs_steps
     print("n_obs_steps: ", n_obs_steps)
@@ -141,7 +144,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
     print("action_offset:", action_offset)
 
     with SharedMemoryManager() as shm_manager:
-        with Spacemouse(shm_manager=shm_manager) as sm, RealEnv(
+        with RealEnv(
             output_dir=output, 
             robot_ip=robot_ip, 
             frequency=frequency,
