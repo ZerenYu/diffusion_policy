@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+import time
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
@@ -327,7 +328,10 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, 
                 lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
+            time_start = time.perf_counter()
             nobs_features = self.obs_encoder(this_nobs)
+            time_end = time.perf_counter()
+            print(f"zyu obs as cond encoder time {time_end - time_start}")
             # reshape back to B, T, Do
             cond = nobs_features.reshape(batch_size, To, -1)
             if self.pred_action_steps_only:
@@ -337,7 +341,10 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
         else:
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
+            time_start = time.perf_counter()
             nobs_features = self.obs_encoder(this_nobs)
+            time_end = time.perf_counter()
+            print(f"zyu obs encoder time {time_end - time_start}")
             # reshape back to B, T, Do
             nobs_features = nobs_features.reshape(batch_size, horizon, -1)
             trajectory = torch.cat([nactions, nobs_features], dim=-1).detach()
@@ -368,7 +375,10 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
         noisy_trajectory[condition_mask] = trajectory[condition_mask]
         
         # Predict the noise residual
+        time_start = time.perf_counter()
         pred = self.model(noisy_trajectory, timesteps, cond)
+        time_end = time.perf_counter()
+        print(f"zyu diffusion run time {pred.shape} {time_end - time_start}")
 
         pred_type = self.noise_scheduler.config.prediction_type 
         if pred_type == 'epsilon':

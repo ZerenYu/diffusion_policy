@@ -45,7 +45,6 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
 
         # configure model
         self.model: DiffusionUnetHybridImagePolicy = hydra.utils.instantiate(cfg.policy)
-
         self.ema_model: DiffusionUnetHybridImagePolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
@@ -161,7 +160,10 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
-
+                        batch_keys = batch.keys()
+                        print(f"[zyu] what's in a batch: {batch_keys}")
+                        print(f"[zyu] batch['action'] shape: {batch['action'].shape}")
+                        print(f"[zyu] batch['obs'] shape: {batch['obs'].keys()}")
                         # compute loss
                         raw_loss = self.model.compute_loss(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
@@ -244,6 +246,7 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                         
                         result = policy.predict_action(obs_dict)
                         pred_action = result['action_pred']
+                        print(f"[zyu] what's in a pred_action pred_action shape: {pred_action.shape}")
                         mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                         step_log['train_action_mse_error'] = mse.item()
                         del batch

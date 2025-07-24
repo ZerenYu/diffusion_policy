@@ -26,8 +26,9 @@ def main(cfg: OmegaConf):
     # resolve immediately so all the ${now:} resolvers
     # will use the same time.
     OmegaConf.resolve(cfg)
-
+    print(f"cfg: {cfg}")
     cls = hydra.utils.get_class(cfg._target_)
+    print(f"cls: {cls}")
     workspace: BaseWorkspace = cls(cfg)
     workspace.run()
 

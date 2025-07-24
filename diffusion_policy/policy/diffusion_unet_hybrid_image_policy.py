@@ -2,6 +2,7 @@ from typing import Dict
 import math
 import torch
 import torch.nn as nn
+import time
 import torch.nn.functional as F
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
@@ -71,6 +72,7 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             task_name='square',
             dataset_type='ph')
         
+        # Augmentation
         with config.unlocked():
             # set config with shape_meta
             config.observation.modalities.obs = obs_config
@@ -101,6 +103,7 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
 
         obs_encoder = policy.nets['policy'].nets['encoder'].nets['obs']
         
+        print(f"zyu {obs_encoder=}")
         if obs_encoder_group_norm:
             # replace batch norm with group norm
             replace_submodules(
@@ -187,7 +190,7 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             dtype=condition_data.dtype,
             device=condition_data.device,
             generator=generator)
-    
+        print(f'[zyu] trajectory shape: {trajectory.shape}')
         # set step values
         scheduler.set_timesteps(self.num_inference_steps)
 
@@ -196,9 +199,11 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             trajectory[condition_mask] = condition_data[condition_mask]
 
             # 2. predict model output
+            time_start = time.perf_counter()
             model_output = model(trajectory, t, 
                 local_cond=local_cond, global_cond=global_cond)
-
+            time_end = time.perf_counter()
+            print(f"zyu diffusion run time {model_output.shape} {time_end - time_start}")
             # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(
                 model_output, t, trajectory, 
@@ -234,6 +239,7 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         # handle different ways of passing observation
         local_cond = None
         global_cond = None
+        start_time = time.perf_counter()
         if self.obs_as_global_cond:
             # condition through global feature
             this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
@@ -253,8 +259,11 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
             cond_data[:,:To,Da:] = nobs_features
             cond_mask[:,:To,Da:] = True
+        end_time = time.perf_counter()
+        print(f"zyu obs encoder time {end_time - start_time}")
 
         # run sampling
+        # Real inference
         nsample = self.conditional_sample(
             cond_data, 
             cond_mask,
@@ -271,6 +280,8 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         end = start + self.n_action_steps
         action = action_pred[:,start:end]
         
+        print(f'[zyu] action shape: {action.shape}')
+        print(f'[zyu] action_pred shape: {action_pred.shape}')
         result = {
             'action': action,
             'action_pred': action_pred
@@ -298,13 +309,19 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, 
                 lambda x: x[:,:self.n_obs_steps,...].reshape(-1,*x.shape[2:]))
+            time_start = time.perf_counter()
             nobs_features = self.obs_encoder(this_nobs)
+            time_end = time.perf_counter()
+            print(f"zyu obs as cond encoder time {time_end - time_start}")
             # reshape back to B, Do
             global_cond = nobs_features.reshape(batch_size, -1)
         else:
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
+            time_start = time.perf_counter()
             nobs_features = self.obs_encoder(this_nobs)
+            time_end = time.perf_counter()
+            print(f"zyu obs encoder time {time_end - time_start}")
             # reshape back to B, T, Do
             nobs_features = nobs_features.reshape(batch_size, horizon, -1)
             cond_data = torch.cat([nactions, nobs_features], dim=-1)
@@ -333,8 +350,12 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         noisy_trajectory[condition_mask] = cond_data[condition_mask]
         
         # Predict the noise residual
+        time_start = time.perf_counter()
+        # shape [64, 16, 2]
         pred = self.model(noisy_trajectory, timesteps, 
             local_cond=local_cond, global_cond=global_cond)
+        time_end = time.perf_counter()
+        print(f"zyu diffusion run time {pred.shape} {time_end - time_start}")
 
         pred_type = self.noise_scheduler.config.prediction_type 
         if pred_type == 'epsilon':

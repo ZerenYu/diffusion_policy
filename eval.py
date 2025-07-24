@@ -31,12 +31,14 @@ def main(checkpoint, output_dir, device):
     payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill)
     cfg = payload['cfg']
     cls = hydra.utils.get_class(cfg._target_)
+    print(f"zyu {cls=}")
     workspace = cls(cfg, output_dir=output_dir)
     workspace: BaseWorkspace
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
     
     # get policy from workspace
     policy = workspace.model
+
     if cfg.training.use_ema:
         policy = workspace.ema_model
     

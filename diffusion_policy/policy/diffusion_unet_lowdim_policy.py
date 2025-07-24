@@ -2,6 +2,7 @@ from typing import Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
@@ -80,9 +81,11 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
             trajectory[condition_mask] = condition_data[condition_mask]
 
             # 2. predict model output
+            time_start = time.perf_counter()
             model_output = model(trajectory, t, 
                 local_cond=local_cond, global_cond=global_cond)
-
+            time_end = time.perf_counter()
+            print(f"zyu diffusion run time {model_output.shape} {time_end - time_start}")
             # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(
                 model_output, t, trajectory, 
@@ -105,6 +108,7 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         assert 'obs' in obs_dict
         assert 'past_action' not in obs_dict # not implemented yet
         nobs = self.normalizer['obs'].normalize(obs_dict['obs'])
+        print(f"zyu {obs_dict=} {nobs.shape=}")
         B, _, Do = nobs.shape
         To = self.n_obs_steps
         assert Do == self.obs_dim
