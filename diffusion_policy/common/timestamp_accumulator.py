@@ -32,7 +32,7 @@ def get_accumulate_timestamp_idxs(
             continue
         if next_global_idx is None:
             next_global_idx = global_idx
-
+        
         n_repeats = max(0, global_idx - next_global_idx + 1)
         for i in range(n_repeats):
             local_idxs.append(local_idx)

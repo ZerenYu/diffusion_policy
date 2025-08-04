@@ -70,6 +70,13 @@ To reproduce our simulation benchmark results, install our conda environment on 
 ```console
 $ sudo apt install -y libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf
 ```
+Install mamba with
+```
+wget -O Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+```
+```
+bash Miniforge3.sh -b -p "${HOME}/conda"
+```
 
 We recommend [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) instead of the standard anaconda distribution for faster installation: 
 ```console

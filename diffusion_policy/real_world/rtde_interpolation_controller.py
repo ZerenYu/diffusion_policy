@@ -193,7 +193,6 @@ class RTDEInterpolationController(mp.Process):
         assert target_time > time.time()
         pose = np.array(pose)
         assert pose.shape == (6,)
-
         message = {
             'cmd': Command.SCHEDULE_WAYPOINT.value,
             'target_pose': pose,

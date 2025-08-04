@@ -8,11 +8,16 @@ def get_real_obs_dict(
         ) -> Dict[str, np.ndarray]:
     obs_dict_np = dict()
     obs_shape_meta = shape_meta['obs']
+    print(f"[zyu] obs_shape_meta is {obs_shape_meta}")
     for key, attr in obs_shape_meta.items():
         type = attr.get('type', 'low_dim')
         shape = attr.get('shape')
         if type == 'rgb':
-            this_imgs_in = env_obs[key]
+            try:
+                this_imgs_in = env_obs[key]
+            except:
+                this_imgs_in = env_obs[f'camera_0']
+                print(f"[zyu] key is {key} use camera_0")
             t,hi,wi,ci = this_imgs_in.shape
             co,ho,wo = shape
             assert ci == co
@@ -26,12 +31,18 @@ def get_real_obs_dict(
                 if this_imgs_in.dtype == np.uint8:
                     out_imgs = out_imgs.astype(np.float32) / 255
             # THWC to TCHW
+            print(f"[zyu] out_imgs is {out_imgs.shape}")
             obs_dict_np[key] = np.moveaxis(out_imgs,-1,1)
         elif type == 'low_dim':
-            this_data_in = env_obs[key]
+            try:
+                this_data_in = env_obs[key]
+            except:
+                this_data_in = env_obs[f'robot_eef_pose'][:,:2]
+                print(f"[zyu] shape of this data in is {this_data_in.shape} {this_data_in}")
             if 'pose' in key and shape == (2,):
                 # take X,Y coordinates
                 this_data_in = this_data_in[...,[0,1]]
+                print(f"[zyu] this_data_in is {this_data_in}")
             obs_dict_np[key] = this_data_in
     return obs_dict_np
 
