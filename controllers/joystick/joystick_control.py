@@ -18,6 +18,7 @@ class JoystickButton(Enum):
     START = 7
     LEFT_STICK = 8
     RIGHT_STICK = 9
+    MANU = 11
 
 
 class JoystickAxis(Enum):

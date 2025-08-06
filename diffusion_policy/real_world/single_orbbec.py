@@ -450,9 +450,14 @@ class SingleOrbbec(mp.Process):
                             continue
                 else:
                     step_idx = int((receive_time - put_start_time) * self.put_fps)
-                    put_data['step_idx'] = step_idx
-                    put_data['timestamp'] = receive_time
-                    self.ring_buffer.put(put_data, wait=False)
+                    try:
+                        put_data['step_idx'] = step_idx
+                        put_data['timestamp'] = receive_time
+                        self.ring_buffer.put(put_data, wait=False)
+                    except TimeoutError as e:
+                        if self.verbose:
+                            print(f"[SingleOrbbec {self.device_id}] Ring buffer full, skipping frame")
+                        continue
 
                 # signal ready
                 if iter_idx == 0:

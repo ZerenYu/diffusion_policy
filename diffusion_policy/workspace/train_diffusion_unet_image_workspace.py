@@ -71,6 +71,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         # configure dataset
         dataset: BaseImageDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
+        print(f'[zyu] dataset: {dataset}')
         assert isinstance(dataset, BaseImageDataset)
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
         normalizer = dataset.get_normalizer()

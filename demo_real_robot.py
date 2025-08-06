@@ -89,11 +89,13 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                     # Start recording (Button 0)
                     env.start_episode(t_start + (iter_idx + 2) * dt - time.monotonic() + time.time())
                     is_recording = True
+                    delete_episode = 0
                     print('Recording!')
                 elif joystick_state.buttons.get(JoystickButton.B.value, False):
                     # Stop recording (Button 1)
                     env.end_episode()
                     is_recording = False
+                    delete_episode = 0
                     print('Stopped.')
                 elif joystick_state.buttons.get(JoystickButton.LEFT_BUMPER.value, False):
                     # Exit program (Button 4)
@@ -104,6 +106,10 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                     if delete_episode == 2:
                         env.drop_episode()
                         delete_episode = 0
+                elif joystick_state.buttons.get(JoystickButton.MANU.value, False):
+                    env.max_pos_speed = 0.01
+                else:
+                    env.max_pos_speed = 0.1
                 precise_wait(t_sample)  
                 
                 # visualize
