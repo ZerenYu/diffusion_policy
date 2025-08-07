@@ -24,354 +24,702 @@ import zarr
 import av
 import cv2
 import shutil
-from typing import Optional, Sequence, Dict, Any
+from typing import Optional, Sequence, Dict, Any, List, Tuple
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.real_world.video_recorder import read_video
 from diffusion_policy.common.cv2_util import get_image_transform
 from diffusion_policy.codecs.imagecodecs_numcodecs import register_codecs
+import tqdm
 register_codecs()
 
-import lerobot
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../datasets/external/lerobot/src'))
 
-# LeRobot imports
-# try:
-#     from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
-#     from lerobot import LeRobotDataset
-#     import tyro
-#     LEROBOT_AVAILABLE = True
-# except ImportError:
-#     print("Warning: LeRobot not available. Install with: pip install lerobot")
-#     LEROBOT_AVAILABLE = False
+from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
-def convert_dp_to_lerobot(
-    dataset_path: str,
-    output_dir: Optional[str] = None,
-    robot_type: str = "panda",
-    fps: int = 10,
-    image_keys: Optional[Sequence[str]] = None,
-    state_keys: Optional[Sequence[str]] = None,
-    action_key: str = "action",
-    task_key: Optional[str] = None,
-    push_to_hub: bool = False,
-    repo_name: str = "diffusion_policy_dataset"
-):
+class DiffusionPolicyDataset:
     """
-    Convert Diffusion Policy data to LeRobot format.
+    A class to read and organize Diffusion Policy data by episodes.
     
-    Args:
-        dataset_path: Path to Diffusion Policy dataset
-        output_dir: Output directory (if None, uses HF_LEROBOT_HOME)
-        robot_type: Robot type for LeRobot dataset
-        fps: Frames per second for the dataset
-        image_keys: Camera keys to include (e.g., ['camera_0', 'camera_1'])
-        state_keys: Keys to include as state/proprioceptive data
-        action_key: Key for action data
-        task_key: Key for task/instruction data (if available)
-        push_to_hub: Whether to push to Hugging Face Hub
-        repo_name: Name for the LeRobot dataset repository
+    This class provides easy access to episode-based data including:
+    - Low-dimensional data (actions, observations, timestamps, etc.)
+    - Camera images for each episode
+    - Episode metadata and organization
     """
     
-    # if not LEROBOT_AVAILABLE:
-    #     raise ImportError("LeRobot is required for this conversion. Install with: pip install lerobot")
+    def __init__(self, dataset_path: str, 
+                 lowdim_keys: Optional[Sequence[str]] = None,
+                 image_keys: Optional[Sequence[str]] = None):
+        """
+        Initialize the Diffusion Policy dataset reader.
+        
+        Args:
+            dataset_path: Path to the dataset directory
+            lowdim_keys: Keys to read from lowdim data (e.g., ['action', 'obs', 'timestamp'])
+            image_keys: Camera keys to read (e.g., ['camera_0', 'camera_1'])
+        """
+        self.dataset_path = pathlib.Path(os.path.expanduser(dataset_path))
+        self.lowdim_keys = lowdim_keys
+        self.image_keys = image_keys
+        
+        # Verify paths
+        self.zarr_path = self.dataset_path.joinpath('replay_buffer.zarr')
+        self.video_dir = self.dataset_path.joinpath('videos')
+        
+        if not self.zarr_path.is_dir():
+            raise FileNotFoundError(f"Zarr directory not found: {self.zarr_path}")
+        if not self.video_dir.is_dir():
+            raise FileNotFoundError(f"Video directory not found: {self.video_dir}")
+        
+        # Load replay buffer
+        self.replay_buffer = ReplayBuffer.create_from_path(str(self.zarr_path.absolute()), mode='r')
+        
+        # Calculate episode boundaries
+        self.episode_lengths = self.replay_buffer.episode_lengths[:]
+        self.episode_ends = self.replay_buffer.episode_ends[:]
+        self.episode_starts = self.episode_ends[:] - self.episode_lengths[:]
+        self.n_episodes = len(self.episode_lengths)
+        
+        # Set default keys if not provided
+        if self.lowdim_keys is None:
+            self.lowdim_keys = list(self.replay_buffer.data.keys())
+        
+        # Cache for video readers
+        self._video_readers = {}
+        self._image_transforms = {}
+        
+        print(f"Loaded dataset with {self.n_episodes} episodes")
+        print(f"Episode lengths: {self.episode_lengths}")
+        print(f"Available lowdim keys: {self.lowdim_keys}")
     
-    # Verify input path
-    input_path = pathlib.Path(os.path.expanduser(dataset_path))
-    in_zarr_path = input_path.joinpath('replay_buffer.zarr')
-    in_video_dir = input_path.joinpath('videos')
-    
-    print(f"Converting Diffusion Policy dataset:")
-    print(f"  Input path: {dataset_path}")
-    print(f"  Zarr path: {in_zarr_path}")
-    print(f"  Video directory: {in_video_dir}")
-    
-    # Check if paths exist
-    if not in_zarr_path.is_dir():
-        raise FileNotFoundError(f"Zarr directory not found: {in_zarr_path}")
-    if not in_video_dir.is_dir():
-        raise FileNotFoundError(f"Video directory not found: {in_video_dir}")
-    
-    # Load replay buffer
-    print("\n=== Loading Replay Buffer ===")
-    replay_buffer = ReplayBuffer.create_from_path(str(in_zarr_path.absolute()), mode='r')
-    print(f"Replay buffer loaded: {replay_buffer}")
-    print(f"Number of steps: {replay_buffer.n_steps}")
-    print(f"Number of episodes: {len(replay_buffer.episode_lengths)}")
-    
-    # Calculate episode starts
-    episode_starts = replay_buffer.episode_ends[:] - replay_buffer.episode_lengths[:]
-    
-    # Determine available keys
-    available_keys = list(replay_buffer.data.keys())
-    print(f"Available data keys: {available_keys}")
-    
-    # Set default keys if not provided
-    if image_keys is None:
-        # Try to detect camera keys
-        image_keys = [key for key in available_keys if key.startswith('camera_')]
-        if not image_keys:
-            print("Warning: No camera keys found, will try to read from video files")
-            image_keys = []
-    
-    if state_keys is None:
-        # Common state keys in DP datasets
-        potential_state_keys = ['obs', 'state', 'proprio', 'joint_pos', 'joint_vel']
-        state_keys = [key for key in available_keys if key in potential_state_keys]
-        if not state_keys:
-            print("Warning: No state keys found")
-            state_keys = []
-    
-    print(f"Using image keys: {image_keys}")
-    print(f"Using state keys: {state_keys}")
-    print(f"Using action key: {action_key}")
-    
-    # Determine image shape and features
-    features = {}
-    
-    # Add image features
-    if image_keys:
-        # Try to get image shape from first episode
-        for camera_key in image_keys:
-            if camera_key in replay_buffer.data:
-                # Get shape from zarr data if available
-                img_data = replay_buffer[camera_key]
-                if len(img_data.shape) == 4:  # (steps, height, width, channels)
-                    height, width, channels = img_data.shape[1:]
-                    features[camera_key] = {
-                        "dtype": "image",
-                        "shape": (height, width, channels),
-                        "names": ["height", "width", "channel"],
-                    }
-                else:
-                    # Default shape if not available
-                    features[camera_key] = {
-                        "dtype": "image",
-                        "shape": (256, 256, 3),
-                        "names": ["height", "width", "channel"],
-                    }
-            else:
-                # Default shape for video-based images
-                features[camera_key] = {
-                    "dtype": "image",
-                    "shape": (256, 256, 3),
-                    "names": ["height", "width", "channel"],
-                }
-    
-    # Add state features
-    for state_key in state_keys:
-        if state_key in replay_buffer.data:
-            state_data = replay_buffer[state_key]
-            if len(state_data.shape) == 2:  # (steps, state_dim)
-                state_dim = state_data.shape[1]
-                features[state_key] = {
-                    "dtype": "float32",
-                    "shape": (state_dim,),
-                    "names": [state_key],
-                }
-            else:
-                print(f"Warning: Unexpected shape for state key {state_key}: {state_data.shape}")
-    
-    # Add action feature
-    if action_key in replay_buffer.data:
-        action_data = replay_buffer[action_key]
-        if len(action_data.shape) == 2:  # (steps, action_dim)
-            action_dim = action_data.shape[1]
-            features["actions"] = {
-                "dtype": "float32",
-                "shape": (action_dim,),
-                "names": ["actions"],
-            }
-        else:
-            print(f"Warning: Unexpected shape for action key {action_key}: {action_data.shape}")
-    
-    # Add task feature if available
-    if task_key and task_key in replay_buffer.data:
-        features["task"] = {
-            "dtype": "string",
-            "shape": (),
-            "names": ["task"],
+    def get_episode_info(self, episode_idx: int) -> Dict[str, Any]:
+        """
+        Get information about a specific episode.
+        
+        Args:
+            episode_idx: Index of the episode
+            
+        Returns:
+            Dictionary containing episode information
+        """
+        if episode_idx >= self.n_episodes:
+            raise ValueError(f"Episode {episode_idx} does not exist. Total episodes: {self.n_episodes}")
+        
+        episode_start = self.episode_starts[episode_idx]
+        episode_length = self.episode_lengths[episode_idx]
+        episode_end = self.episode_ends[episode_idx]
+        
+        return {
+            'episode_idx': episode_idx,
+            'start_step': episode_start,
+            'end_step': episode_end,
+            'length': episode_length,
+            'video_dir': self.video_dir.joinpath(str(episode_idx))
         }
     
-    print(f"LeRobot features: {list(features.keys())}")
+    def get_lowdim_data(self, episode_idx: int, keys: Optional[Sequence[str]] = None) -> Dict[str, np.ndarray]:
+        """
+        Get low-dimensional data for a specific episode.
+        
+        Args:
+            episode_idx: Index of the episode
+            keys: Specific keys to retrieve (if None, uses self.lowdim_keys)
+            
+        Returns:
+            Dictionary mapping keys to numpy arrays
+        """
+        episode_info = self.get_episode_info(episode_idx)
+        start_step = episode_info['start_step']
+        end_step = episode_info['end_step']
+        
+        if keys is None:
+            keys = self.lowdim_keys
+        
+        data = {}
+        for key in keys:
+            if key in self.replay_buffer.data:
+                data[key] = self.replay_buffer[key][start_step:end_step]
+            else:
+                print(f"Warning: Key '{key}' not found in replay buffer")
+        return data
     
-    # Set up output path
-    if output_dir is None:
-        output_path = HF_LEROBOT_HOME / repo_name
-    else:
-        output_path = pathlib.Path(output_dir) / repo_name
+    def get_frame(self, episode_idx: int, step_idx: int, camera_key: str) -> np.ndarray:
+        """
+        Get a specific frame from a camera for a given episode and step.
+        
+        Args:
+            episode_idx: Index of the episode
+            step_idx: Index of the step within the episode
+            camera_key: Camera key (e.g., 'camera_0')
+            
+        Returns:
+            Frame as numpy array
+        """
+        episode_info = self.get_episode_info(episode_idx)
+        video_dir = episode_info['video_dir']
+        
+        if not video_dir.is_dir():
+            raise FileNotFoundError(f"Video directory not found for episode {episode_idx}")
+        
+        # Extract camera index from camera_key
+        if not camera_key.startswith('camera_'):
+            raise ValueError(f"Invalid camera key: {camera_key}. Expected format: 'camera_X'")
+        
+        camera_idx = int(camera_key.split('_')[1])
+        video_path = video_dir.joinpath(f"{camera_idx}.mp4")
+        
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        
+        # Get or create video reader
+        reader_key = f"{episode_idx}_{camera_idx}"
+        if reader_key not in self._video_readers:
+            # Get video properties
+            with av.open(str(video_path)) as container:
+                video = container.streams.video[0]
+                vcc = video.codec_context
+                resolution = (vcc.width, vcc.height)
+                fps = video.average_rate
+                duration = video.duration
+            
+            # Get timestamps for this episode
+            episode_data = self.get_lowdim_data(episode_idx, ['timestamp'])
+            if 'timestamp' in episode_data:
+                timestamps = episode_data['timestamp']
+                dt = timestamps[1] - timestamps[0] if len(timestamps) > 1 else 1.0
+            else:
+                dt = 1.0 / float(fps) if fps else 1.0
+            
+            # Create image transform
+            image_tf = get_image_transform(
+                input_res=resolution,
+                output_res=resolution,
+                bgr_to_rgb=False
+            )
+            
+            self._video_readers[reader_key] = {
+                'video_path': str(video_path),
+                'dt': dt,
+                'image_tf': image_tf,
+                'resolution': resolution,
+                'fps': fps
+            }
+        
+        reader_info = self._video_readers[reader_key]
+        
+        # Read the specific frame
+        frame_generator = read_video(
+            video_path=reader_info['video_path'],
+            dt=reader_info['dt'],
+            img_transform=reader_info['image_tf'],
+            thread_type='FRAME',
+            thread_count=1
+        )
+        
+        # Skip to the desired frame
+        for i, frame in enumerate(frame_generator):
+            if i == step_idx:
+                return frame
+            elif i > step_idx:
+                break
+        
+        raise ValueError(f"Step {step_idx} not found in episode {episode_idx}, camera {camera_key}")
     
-    # Clean up any existing dataset
-    if output_path.exists():
-        shutil.rmtree(output_path)
+    def get_frame_data(self, episode_idx: int, step_idx: int) -> Dict[str, Any]:
+        """
+        Get all data for a single frame including low-dimensional data and all camera frames.
+        
+        Args:
+            episode_idx: Index of the episode
+            step_idx: Index of the step within the episode
+            
+        Returns:
+            Dictionary containing all frame data:
+            - episode_info: Episode metadata
+            - step_idx: Step index within episode
+            - lowdim_data: Dictionary of low-dimensional data for this step
+            - frames: Dictionary mapping camera keys to frame arrays
+            - available_cameras: List of available cameras
+        """
+        episode_info = self.get_episode_info(episode_idx)
+        
+        if step_idx >= episode_info['length']:
+            raise ValueError(f"Step {step_idx} is out of range for episode {episode_idx} (length: {episode_info['length']})")
+        
+        # Get low-dimensional data for this step
+        episode_lowdim = self.get_lowdim_data(episode_idx)
+        lowdim_data = {}
+        for key, data in episode_lowdim.items():
+            if step_idx < len(data):
+                lowdim_data[key] = data[step_idx]
+            else:
+                print(f"Warning: Step {step_idx} not available for key '{key}' (data length: {len(data)})")
+        
+        # Get available cameras
+        available_cameras = self.get_available_cameras(episode_idx)
+        
+        # Get frames from all available cameras
+        frames = {}
+        for camera_key in available_cameras:
+            try:
+                frame = self.get_frame(episode_idx, step_idx, camera_key)
+                frames[camera_key] = frame
+            except Exception as e:
+                print(f"Warning: Could not read frame from {camera_key} at step {step_idx}: {e}")
+        return {
+            'episode_info': episode_info,
+            'step_idx': step_idx,
+            'lowdim_data': lowdim_data,
+            'frames': frames,
+            'available_cameras': available_cameras,
+            'timestamp': lowdim_data.get('timestamp', None),
+            'action': lowdim_data.get('action', None).astype(np.float32),
+            'stage': lowdim_data.get('stage', None),
+            'robot_eef_pose': lowdim_data.get('robot_eef_pose', None).astype(np.float32),
+            'robot_eef_pose_vel': lowdim_data.get('robot_eef_pose_vel', None).astype(np.float32),
+            'robot_joint': lowdim_data.get('robot_joint', None).astype(np.float32),
+            'robot_joint_vel': lowdim_data.get('robot_joint_vel', None).astype(np.float32)
+        }
     
-    # Create LeRobot dataset
-    print(f"\n=== Creating LeRobot Dataset ===")
-    print(f"Output path: {output_path}")
-    print(f"Robot type: {robot_type}")
-    print(f"FPS: {fps}")
+    def get_features(self, episode_idx: int, step_idx: int, task: str = "manipulation") -> Dict[str, Any]:
+        """
+        Get formatted features for LeRobot dataset from a single frame.
+        
+        This function extracts and formats all data for a single frame in the format
+        expected by LeRobot's add_frame() method.
+        
+        Args:
+            episode_idx: Index of the episode
+            step_idx: Index of the step within the episode
+            task: Task name for this frame (default: "manipulation")
+            
+        Returns:
+            Dictionary containing formatted features for LeRobot dataset:
+            - image: Main camera image (if available)
+            - wrist_image: Wrist camera image (if available)
+            - state: Robot state/proprioceptive data
+            - actions: Robot actions
+            - timestamp: Frame timestamp
+        """
+        frame_data = self.get_frame_data(episode_idx, step_idx)
+        # Initialize features dictionary
+        features = {}
+        
+        # Add images
+        frames = frame_data['frames']
+        if 'camera_0' in frames:
+            features['image'] = frames['camera_0']
+        if 'camera_1' in frames:
+            features['wrist_image'] = frames['camera_1']
+        
+        # Add state data (combine robot proprioceptive information)
+        state_components = []
+        lowdim_data = frame_data['lowdim_data']
+        # Add robot joint positions if available
+        if 'robot_joint' in frame_data:
+            joint_pos = frame_data['robot_joint']
+            if isinstance(joint_pos, np.ndarray):
+                features['robot_joint'] = joint_pos.flatten()
+        
+        # Add robot joint velocities if available
+        if 'robot_joint_vel' in frame_data:
+            joint_vel = frame_data['robot_joint_vel']
+            if isinstance(joint_vel, np.ndarray):
+                features['robot_joint_vel'] = joint_vel.flatten()
+        
+        # Add end-effector pose if available
+        if 'robot_eef_pose' in frame_data:
+            eef_pose = frame_data['robot_eef_pose']
+            if isinstance(eef_pose, np.ndarray):
+                features['robot_eef_pose'] = eef_pose.flatten()
+        
+        # Add end-effector velocity if available
+        if 'robot_eef_pose_vel' in frame_data:
+            eef_vel = frame_data['robot_eef_pose_vel']
+            if isinstance(eef_vel, np.ndarray):
+                features['robot_eef_pose_vel'] = eef_vel.flatten()
+        
+        # Add actions
+        if 'action' in lowdim_data and lowdim_data['action'] is not None:
+            action = lowdim_data['action']
+            if isinstance(action, np.ndarray):
+                features['actions'] = action.flatten()
+        
+        # Add timestamp
+        if 'timestamp' in lowdim_data and lowdim_data['timestamp'] is not None:
+            timestamp = lowdim_data['timestamp']
+            if isinstance(timestamp, (np.ndarray, list)):
+                # Extract scalar value if it's an array
+                if hasattr(timestamp, '__len__') and len(timestamp) > 0:
+                    features['timestamp'] = float(timestamp[0] if isinstance(timestamp, np.ndarray) else timestamp[0])
+                else:
+                    features['timestamp'] = float(timestamp)
+            else:
+                features['timestamp'] = float(timestamp)
+        return features
     
-    dataset = LeRobotDataset.create(
-        repo_id=repo_name,
+    def get_lerobot_features_spec(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get the features specification for LeRobot dataset creation.
+        
+        This function analyzes the dataset and returns a features dictionary
+        that can be used to create a LeRobot dataset.
+        
+        Returns:
+            Dictionary containing feature specifications for LeRobot dataset
+        """
+        # Analyze first episode to determine data shapes and types
+        if self.n_episodes == 0:
+            raise ValueError("No episodes available in dataset")
+        
+        # Get sample frame data
+        sample_frame = self.get_frame_data(0, 0)
+        features = self.get_features(0, 0)
+        # Build features specification
+        features_spec = {}
+        # Add image features
+        if 'image' in features:
+            image_shape = features['image'].shape
+            features_spec['image'] = {
+                'dtype': 'image',
+                'shape': image_shape,
+                'names': ['height', 'width', 'channel'] if len(image_shape) == 3 else ['height', 'width']
+            }
+        
+        if 'wrist_image' in features:
+            wrist_shape = features['wrist_image'].shape
+            features_spec['wrist_image'] = {
+                'dtype': 'image',
+                'shape': wrist_shape,
+                'names': ['height', 'width', 'channel'] if len(wrist_shape) == 3 else ['height', 'width']
+            }
+        
+        # Add state feature
+        if 'state' in features:
+            state_shape = features['state'].shape
+            features_spec['state'] = {
+                'dtype': 'float32',
+                'shape': state_shape,
+                'names': ['state']
+            }
+        
+        # Add actions feature
+        if 'actions' in features:
+            action_shape = features['actions'].shape
+            features_spec['actions'] = {
+                'dtype': 'float32',
+                'shape': action_shape,
+                'names': ['actions']
+            }
+            
+        if 'robot_joint' in features:
+            robot_joint_shape = features['robot_joint'].shape
+            features_spec['robot_joint'] = {
+                'dtype': 'float32',
+                'shape': robot_joint_shape,
+                'names': ['robot_joint']
+            }
+            
+        if 'robot_joint_vel' in features:
+            robot_joint_vel_shape = features['robot_joint_vel'].shape
+            features_spec['robot_joint_vel'] = {
+                'dtype': 'float32',
+                'shape': robot_joint_vel_shape,
+                'names': ['robot_joint_vel']
+            }
+            
+        if 'robot_eef_pose' in features:
+            robot_eef_pose_shape = features['robot_eef_pose'].shape
+            features_spec['robot_eef_pose'] = {
+                'dtype': 'float32',
+                'shape': robot_eef_pose_shape,
+                'names': ['robot_eef_pose']
+            }
+            
+        if 'robot_eef_pose_vel' in features:
+            robot_eef_pose_vel_shape = features['robot_eef_pose_vel'].shape
+            features_spec['robot_eef_pose_vel'] = {
+                'dtype': 'float32',
+                'shape': robot_eef_pose_vel_shape,
+                'names': ['robot_eef_pose_vel']
+            }
+            
+        if 'stage' in features:
+            stage_shape = features['stage'].shape
+            features_spec['stage'] = {
+                'dtype': 'string',
+                'shape': stage_shape,
+                'names': ['stage']
+            }
+            
+        
+        return features_spec
+    
+    def get_episode_frames(self, episode_idx: int, camera_keys: Optional[Sequence[str]] = None) -> Dict[str, List[np.ndarray]]:
+        """
+        Get all frames for an episode from specified cameras.
+        
+        Args:
+            episode_idx: Index of the episode
+            camera_keys: List of camera keys to read (if None, uses self.image_keys)
+            
+        Returns:
+            Dictionary mapping camera keys to lists of frames
+        """
+        episode_info = self.get_episode_info(episode_idx)
+        episode_length = episode_info['length']
+        
+        if camera_keys is None:
+            camera_keys = self.image_keys or []
+        
+        frames = {}
+        for camera_key in camera_keys:
+            frames[camera_key] = []
+            for step_idx in range(episode_length):
+                try:
+                    frame = self.get_frame(episode_idx, step_idx, camera_key)
+                    frames[camera_key].append(frame)
+                    break
+                except Exception as e:
+                    print(f"Warning: Could not read frame {step_idx} for {camera_key}: {e}")
+                    break
+        
+        return frames
+    
+    def get_available_cameras(self, episode_idx: int) -> List[str]:
+        """
+        Get list of available cameras for an episode.
+        
+        Args:
+            episode_idx: Index of the episode
+            
+        Returns:
+            List of available camera keys
+        """
+        episode_info = self.get_episode_info(episode_idx)
+        video_dir = episode_info['video_dir']
+        
+        if not video_dir.is_dir():
+            return []
+        
+        camera_keys = []
+        for video_file in video_dir.glob('*.mp4'):
+            try:
+                camera_idx = int(video_file.stem)
+                camera_keys.append(f'camera_{camera_idx}')
+            except ValueError:
+                continue
+        
+        return sorted(camera_keys)
+    
+    def get_dataset_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of the dataset.
+        
+        Returns:
+            Dictionary containing dataset summary information
+        """
+        summary = {
+            'n_episodes': self.n_episodes,
+            'episode_lengths': self.episode_lengths.tolist(),
+            'total_steps': sum(self.episode_lengths),
+            'available_lowdim_keys': self.lowdim_keys,
+            'episode_info': []
+        }
+        
+        for episode_idx in range(self.n_episodes):
+            episode_info = self.get_episode_info(episode_idx)
+            available_cameras = self.get_available_cameras(episode_idx)
+            episode_info['available_cameras'] = available_cameras
+            summary['episode_info'].append(episode_info)
+        
+        return summary
+    
+    def __len__(self) -> int:
+        """Return the number of episodes in the dataset."""
+        return self.n_episodes
+    
+    def __getitem__(self, episode_idx: int) -> Dict[str, Any]:
+        """
+        Get all data for an episode.
+        
+        Args:
+            episode_idx: Index of the episode
+            
+        Returns:
+            Dictionary containing episode data
+        """
+        lowdim_data = self.get_lowdim_data(episode_idx)
+        frames = self.get_episode_frames(episode_idx)
+        episode_info = self.get_episode_info(episode_idx)
+        
+        return {
+            'episode_info': episode_info,
+            'lowdim_data': lowdim_data,
+            'frames': frames
+        }
+
+def demonstrate_dataset_usage(dataset_path: str):
+    """
+    Demonstrate how to use the DiffusionPolicyDataset class.
+    
+    Args:
+        dataset_path: Path to the Diffusion Policy dataset
+    """
+    print("=" * 60)
+    print("DEMONSTRATING DIFFUSION POLICY DATASET USAGE")
+    print("=" * 60)
+    
+    # Initialize the dataset
+    dataset = DiffusionPolicyDataset(
+        dataset_path=dataset_path,
+        lowdim_keys=['action', 'obs', 'timestamp', 'robot_eef_pose',
+                     'robot_eef_pose_vel', 'robot_joint', 'robot_joint_vel','stage'],
+        image_keys=['camera_0']
+    )
+    
+    # Get dataset summary
+    summary = dataset.get_dataset_summary()
+    print(f"\nDataset Summary:")
+    print(f"  Total episodes: {summary['n_episodes']}")
+    print(f"  Total steps: {summary['total_steps']}")
+    print(f"  Episode lengths: {summary['episode_lengths']}")
+    
+    # Process first episode as an example
+    if len(dataset) > 0:
+        episode_idx = 0
+        print(f"\n--- Processing Episode {episode_idx} ---")
+        
+        # Get episode info
+        episode_info = dataset.get_episode_info(episode_idx)
+        print(f"Episode info: {episode_info}")
+        
+        # Get available cameras
+        available_cameras = dataset.get_available_cameras(episode_idx)
+        print(f"Available cameras: {available_cameras}")
+        
+        # Get lowdim data
+        lowdim_data = dataset.get_lowdim_data(episode_idx)
+        print(f"Lowdim data keys: {list(lowdim_data.keys())}")
+        for key, data in lowdim_data.items():
+            print(f"  {key}: shape={data.shape}, dtype={data.dtype}")
+        
+        # Get a specific frame
+        if available_cameras and episode_info['length'] > 0:
+            camera_key = available_cameras[0]
+            step_idx = 0
+            try:
+                frame = dataset.get_frame(episode_idx, step_idx, camera_key)
+                print(f"Frame from {camera_key} at step {step_idx}: shape={frame.shape}, dtype={frame.dtype}")
+                print(f"  Frame range: [{frame.min()}, {frame.max()}]")
+            except Exception as e:
+                print(f"Error reading frame: {e}")
+        
+        # Get complete frame data (everything for a single frame)
+        if episode_info['length'] > 0:
+            step_idx = 0
+            try:
+                frame_data = dataset.get_frame_data(episode_idx, step_idx)
+                print(f"\nComplete frame data for episode {episode_idx}, step {step_idx}:")
+                print(f"  Episode info: {frame_data['episode_info']}")
+                print(f"  Available cameras: {frame_data['available_cameras']}")
+                print(f"  Lowdim data keys: {list(frame_data['lowdim_data'].keys())}")
+                print(f"  Frame keys: {list(frame_data['frames'].keys())}")
+                print(f'frame_data: {frame_data}')
+                
+                # Show some data details
+                for key, value in frame_data['lowdim_data'].items():
+                    if isinstance(value, np.ndarray):
+                        print(f"    {key}: shape={value.shape}, dtype={value.dtype}")
+                    else:
+                        print(f"    {key}: {value}")
+                
+                for camera_key, frame in frame_data['frames'].items():
+                    print(f"    {camera_key}: shape={frame.shape}, dtype={frame.dtype}")
+                    print(f"      Frame range: [{frame.min()}, {frame.max()}]")
+                    
+            except Exception as e:
+                print(f"Error reading complete frame data: {e}")
+        
+        # Test get_features function
+        if episode_info['length'] > 0:
+            step_idx = 0
+            try:
+                features = dataset.get_features(episode_idx, step_idx)
+                print(f"\nLeRobot features for episode {episode_idx}, step {step_idx}:")
+                print(f"  Feature keys: {list(features.keys())}")
+                for key, value in features.items():
+                    if isinstance(value, np.ndarray):
+                        print(f"    {key}: shape={value.shape}, dtype={value.dtype}")
+                        if key in ['image', 'wrist_image']:
+                            print(f"      Range: [{value.min()}, {value.max()}]")
+                    else:
+                        print(f"    {key}: {value}")
+                
+                # Test features specification
+                features_spec = dataset.get_lerobot_features_spec()
+                print(f"\nLeRobot features specification:")
+                for key, spec in features_spec.items():
+                    print(f"  {key}: {spec}")
+                    
+            except Exception as e:
+                print(f"Error getting LeRobot features: {e}")
+        
+        # Get all frames for the episode
+        try:
+            frames = dataset.get_episode_frames(episode_idx, available_cameras[:1])
+            print(f"Retrieved frames for cameras: {list(frames.keys())}")
+            
+            for camera_key, frame_list in frames.items():
+                print(f"  {camera_key}: {len(frame_list)} frames")
+        except Exception as e:
+            print(f"Error reading episode frames: {e}")
+    
+    print("\n" + "=" * 60)
+
+def convert_to_lerobot(dataset_path: str, output_path: str, robot_type: str = "UR10", fps: int = 10):
+    """
+    Convert a Diffusion Policy dataset to LeRobot format.
+    
+    Args:
+        dataset_path: Path to the Diffusion Policy dataset
+    """
+    dp_dataset = DiffusionPolicyDataset(
+        dataset_path=dataset_path,
+        lowdim_keys=['action', 'timestamp', 'robot_eef_pose',
+                     'robot_eef_pose_vel', 'robot_joint', 'robot_joint_vel','stage'],
+        image_keys=['camera_0']
+    )
+    features = dp_dataset.get_lerobot_features_spec()
+    print(f'features: {features}')
+    Le_dataset = LeRobotDataset.create(
+        repo_id=dataset_path.split('/')[-1],
         robot_type=robot_type,
         fps=fps,
         features=features,
-        image_writer_threads=10,
-        image_writer_processes=5,
+        image_writer_threads=20,
+        image_writer_processes=10,
     )
+    for episode_idx in range(dp_dataset.n_episodes):
+        episode_data = dp_dataset[episode_idx]
+        for step_idx in tqdm.trange(episode_data['episode_info']['length']):
+            frame_data = dp_dataset.get_frame_data(episode_idx, step_idx)
+            Le_dataset.add_frame({
+                'image': frame_data['frames']['camera_0'],
+                'robot_joint': frame_data['robot_joint'],
+                'robot_joint_vel': frame_data['robot_joint_vel'],
+                'robot_eef_pose': frame_data['robot_eef_pose'],
+                'robot_eef_pose_vel': frame_data['robot_eef_pose_vel'],
+                'actions': frame_data['action'],
+                }, task='pusht', timestamp=frame_data['timestamp'])
+        Le_dataset.save_episode()
     
-    # Get timestamps for video reading
-    timestamps = replay_buffer['timestamp'][:]
-    dt = timestamps[1] - timestamps[0]
-    print(f"Timestamp dt: {dt}")
-    
-    # Process each episode
-    print(f"\n=== Converting Episodes ===")
-    for episode_idx, episode_length in enumerate(replay_buffer.episode_lengths):
-        episode_start = episode_starts[episode_idx]
-        episode_video_dir = in_video_dir.joinpath(str(episode_idx))
-        
-        print(f"Processing episode {episode_idx} (length: {episode_length})")
-        
-        if not episode_video_dir.is_dir():
-            print(f"Warning: Video directory not found for episode {episode_idx}, skipping")
-            continue
-        
-        # Get video files for this episode
-        episode_video_paths = sorted(episode_video_dir.glob('*.mp4'), key=lambda x: int(x.stem))
-        print(f"  Found {len(episode_video_paths)} video files")
-        
-        # Process each step in the episode
-        for step_idx in range(episode_length):
-            global_idx = episode_start + step_idx
-            
-            # Prepare frame data
-            frame_data = {}
-            
-            # Add state data
-            for state_key in state_keys:
-                if state_key in replay_buffer.data:
-                    frame_data[state_key] = replay_buffer[state_key][global_idx]
-            
-            # Add action data
-            if action_key in replay_buffer.data:
-                frame_data["actions"] = replay_buffer[action_key][global_idx]
-            
-            # Add task data
-            if task_key and task_key in replay_buffer.data:
-                task_data = replay_buffer[task_key][global_idx]
-                if isinstance(task_data, bytes):
-                    frame_data["task"] = task_data.decode('utf-8')
-                else:
-                    frame_data["task"] = str(task_data)
-            
-            # Add image data from videos
-            for video_path in episode_video_paths:
-                camera_idx = int(video_path.stem)
-                camera_key = f'camera_{camera_idx}'
-                
-                if camera_key not in image_keys:
-                    continue
-                
-                # Read frame from video
-                try:
-                    # Get video resolution
-                    with av.open(str(video_path.absolute())) as container:
-                        video = container.streams.video[0]
-                        vcc = video.codec_context
-                        resolution = (vcc.width, vcc.height)
-                    
-                    # Create image transform
-                    image_tf = get_image_transform(
-                        input_res=resolution,
-                        output_res=resolution,
-                        bgr_to_rgb=False
-                    )
-                    
-                    # Read specific frame
-                    frame_generator = read_video(
-                        video_path=str(video_path),
-                        dt=dt,
-                        img_transform=image_tf,
-                        thread_type='FRAME',
-                        thread_count=1
-                    )
-                    
-                    # Get the specific frame
-                    for i, frame in enumerate(frame_generator):
-                        if i == step_idx:
-                            frame_data[camera_key] = frame
-                            break
-                        if i > step_idx:
-                            break
-                    
-                except Exception as e:
-                    print(f"    Warning: Failed to read frame {step_idx} from {video_path.name}: {e}")
-                    continue
-            
-            # Add frame to dataset
-            if frame_data:
-                dataset.add_frame(frame_data)
-            
-            if step_idx % 10 == 0:
-                print(f"    Processed step {step_idx}/{episode_length}")
-        
-        # Save episode
-        dataset.save_episode()
-        print(f"  Saved episode {episode_idx}")
-    
-    print(f"\n=== Conversion Complete ===")
-    print(f"Dataset saved to: {output_path}")
-    
-    # Optionally push to Hugging Face Hub
-    if push_to_hub:
-        print(f"Pushing to Hugging Face Hub...")
-        dataset.push_to_hub(
-            tags=["diffusion-policy", robot_type, "converted"],
-            private=False,
-            push_videos=True,
-            license="apache-2.0",
-        )
-        print(f"Successfully pushed to Hub!")
-    
-    return dataset
-
-
-def main():
-    """Main function for command line usage."""
-    if len(sys.argv) < 2:
-        print("Usage: python convert_to_lerobot.py <dataset_path> [--output_dir <output_dir>] [--push_to_hub]")
-        print("Example: python convert_to_lerobot.py /path/to/dp_dataset --output_dir ./output --push_to_hub")
-        sys.exit(1)
-    
-    dataset_path = sys.argv[1]
-    
-    # Parse additional arguments
-    output_dir = None
-    push_to_hub = False
-    
-    i = 2
-    while i < len(sys.argv):
-        if sys.argv[i] == "--output_dir" and i + 1 < len(sys.argv):
-            output_dir = sys.argv[i + 1]
-            i += 2
-        elif sys.argv[i] == "--push_to_hub":
-            push_to_hub = True
-            i += 1
-        else:
-            i += 1
-    
-    try:
-        convert_dp_to_lerobot(
-            dataset_path=dataset_path,
-            output_dir=output_dir,
-            push_to_hub=push_to_hub
-        )
-    except Exception as e:
-        print(f"Error during conversion: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
 
 if __name__ == "__main__":
-    main()
+    dataset_path = "data/experiments/test_push_T_2"
+    output_path = "data/experiments/test_push_T_2_lerobot"
+    convert_to_lerobot(dataset_path, output_path)
+

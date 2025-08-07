@@ -171,27 +171,6 @@ def read_raw_data(dataset_path: str,
                     print(f"        Frame range: [{frame.min()}, {frame.max()}]")
                     
                     # Save frame if requested
-                    if save_frames:
-                        # Create episode directory
-                        episode_dir = output_path / f"episode_{episode_idx}"
-                        episode_dir.mkdir(exist_ok=True)
-                        
-                        # Create camera directory
-                        camera_dir = episode_dir / f"camera_{camera_idx}"
-                        camera_dir.mkdir(exist_ok=True)
-                        
-                        # Save frame
-                        frame_filename = f"step_{step_idx:04d}.png"
-                        frame_path = camera_dir / frame_filename
-                        
-                        # Convert BGR to RGB if needed and save
-                        if frame.dtype == np.uint8:
-                            # OpenCV expects BGR format for saving
-                            cv2.imwrite(str(frame_path), frame)
-                            print(f"        Saved frame: {frame_path}")
-                        else:
-                            print(f"        Warning: Unexpected frame dtype {frame.dtype}, skipping save")
-                    
                     frame_count += 1
                 
                 print(f"    Read {frame_count} frames")
