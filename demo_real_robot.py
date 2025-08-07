@@ -8,11 +8,10 @@ Press SpaceMouse right button to unlock z axis.
 Press SpaceMouse left button to enable rotation axes.
 
 Recording control:
-Click the opencv window (make sure it's in focus).
-Press "C" to start recording.
-Press "S" to stop recording.
-Press "Q" to exit program.
-Press "Backspace" to delete the previously recorded episode.
+Use joystick buttons:
+- Button 0 (A) to start recording
+- Button 1 (B) to stop recording  
+- Button 4 (LEFT_BUMPER) to exit program
 """
 
 # %%
@@ -23,11 +22,8 @@ import cv2
 import numpy as np
 import scipy.spatial.transform as st
 from diffusion_policy.real_world.real_env import RealEnv
-from diffusion_policy.real_world.spacemouse_shared_memory import Spacemouse
 from diffusion_policy.common.precise_sleep import precise_wait
-from diffusion_policy.real_world.keystroke_counter import (
-    KeystrokeCounter, Key, KeyCode
-)
+from controllers.joystick.joystick_control import JoystickInterface, JoystickAxis, JoystickButton
 
 @click.command()
 @click.option('--output', '-o', required=True, help="Directory to save demonstration dataset.")
@@ -39,13 +35,12 @@ from diffusion_policy.real_world.keystroke_counter import (
 def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_latency):
     dt = 1/frequency
     with SharedMemoryManager() as shm_manager:
-        with KeystrokeCounter() as key_counter, \
-            Spacemouse(shm_manager=shm_manager) as sm, \
-            RealEnv(
+        joystick = JoystickInterface()
+        with RealEnv(
                 output_dir=output, 
                 robot_ip=robot_ip, 
                 # recording resolution
-                obs_image_resolution=(1280,720),
+                obs_image_resolution=(640,480),
                 frequency=frequency,
                 init_joints=init_joints,
                 enable_multi_cam_vis=True,
@@ -56,12 +51,17 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 video_crf=21,
                 shm_manager=shm_manager
             ) as env:
+            if not joystick.connect_device(0):
+                print("No joystick found. Exiting.")
+                return
+            print("Joystick connected.")
+            
             cv2.setNumThreads(1)
 
-            # realsense exposure
-            env.realsense.set_exposure(exposure=120, gain=0)
-            # realsense white balance
-            env.realsense.set_white_balance(white_balance=5900)
+            # # realsense exposure
+            # env.realsense.set_exposure(exposure=120, gain=0)
+            # # realsense white balance
+            # env.realsense.set_white_balance(white_balance=5900)
 
             time.sleep(1.0)
             print('Ready!')
@@ -71,6 +71,7 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
             iter_idx = 0
             stop = False
             is_recording = False
+            delete_episode = 0
             while not stop:
                 # calculate timing
                 t_cycle_end = t_start + (iter_idx + 1) * dt
@@ -80,39 +81,46 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 # pump obs
                 obs = env.get_obs()
 
-                # handle key presses
-                press_events = key_counter.get_press_events()
-                for key_stroke in press_events:
-                    if key_stroke == KeyCode(char='q'):
-                        # Exit program
-                        stop = True
-                    elif key_stroke == KeyCode(char='c'):
-                        # Start recording
-                        env.start_episode(t_start + (iter_idx + 2) * dt - time.monotonic() + time.time())
-                        key_counter.clear()
-                        is_recording = True
-                        print('Recording!')
-                    elif key_stroke == KeyCode(char='s'):
-                        # Stop recording
-                        env.end_episode()
-                        key_counter.clear()
-                        is_recording = False
-                        print('Stopped.')
-                    elif key_stroke == Key.backspace:
-                        # Delete the most recent recorded episode
-                        if click.confirm('Are you sure to drop an episode?'):
-                            env.drop_episode()
-                            key_counter.clear()
-                            is_recording = False
-                        # delete
-                stage = key_counter[Key.space]
-
+                # handle joystick button presses
+                joystick_state = joystick.read_state(0)
+                
+                # Check for button presses
+                if joystick_state.buttons.get(JoystickButton.A.value, False):
+                    # Start recording (Button 0)
+                    env.start_episode(t_start + (iter_idx + 2) * dt - time.monotonic() + time.time())
+                    is_recording = True
+                    delete_episode = 0
+                    print('Recording!')
+                elif joystick_state.buttons.get(JoystickButton.B.value, False):
+                    # Stop recording (Button 1)
+                    env.end_episode()
+                    is_recording = False
+                    delete_episode = 0
+                    print('Stopped.')
+                elif joystick_state.buttons.get(JoystickButton.LEFT_BUMPER.value, False):
+                    # Exit program (Button 4)
+                    stop = True
+                elif joystick_state.buttons.get(JoystickButton.Y.value, False):
+                    delete_episode += 1
+                    print(f"[zyu]you sure delete_episode? {delete_episode}")
+                    if delete_episode == 2:
+                        env.drop_episode()
+                        delete_episode = 0
+                elif joystick_state.buttons.get(JoystickButton.MANU.value, False):
+                    env.max_pos_speed = 0.01
+                else:
+                    env.max_pos_speed = 0.1
+                precise_wait(t_sample)  
+                
                 # visualize
                 vis_img = obs[f'camera_{vis_camera_idx}'][-1,:,:,::-1].copy()
                 episode_id = env.replay_buffer.n_episodes
-                text = f'Episode: {episode_id}, Stage: {stage}'
+                text = f'Episode: {episode_id}'
                 if is_recording:
                     text += ', Recording!'
+                    print(f"[zyu] recording")
+                else:
+                    print(f"[zyu] stopping")
                 cv2.putText(
                     vis_img,
                     text,
@@ -122,36 +130,43 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                     thickness=2,
                     color=(255,255,255)
                 )
-
                 cv2.imshow('default', vis_img)
-                cv2.pollKey()
+                precise_wait(t_sample) 
+            
 
-                precise_wait(t_sample)
                 # get teleop command
-                sm_state = sm.get_motion_state_transformed()
-                # print(sm_state)
-                dpos = sm_state[:3] * (env.max_pos_speed / frequency)
-                drot_xyz = sm_state[3:] * (env.max_rot_speed / frequency)
-                
-                if not sm.is_button_pressed(0):
-                    # translation mode
-                    drot_xyz[:] = 0
+                x_pos = -joystick_state.axes.get(JoystickAxis.LEFT_X.value, 0.0) * (env.max_pos_speed / frequency)
+                y_pos = joystick_state.axes.get(JoystickAxis.LEFT_Y.value, 0.0) * (env.max_pos_speed / frequency)
+                if joystick_state.buttons.get(JoystickButton.BACK.value, False):
+                    z_pos = -(env.max_pos_speed / frequency)
+                elif joystick_state.buttons.get(JoystickButton.START.value, False):
+                    z_pos = (env.max_pos_speed / frequency)
                 else:
-                    dpos[:] = 0
-                if not sm.is_button_pressed(1):
-                    # 2D translation mode
-                    dpos[2] = 0    
-
+                    z_pos = 0.0
+                dpos = np.array([x_pos, y_pos, z_pos])
+                # drot_xyz = sm_state[3:] * (env.max_rot_speed / frequency)
+                
+                # if not sm.is_button_pressed(0):
+                #     # translation mode
+                #     drot_xyz[:] = 0
+                # else:
+                #     dpos[:] = 0
+                # if not sm.is_button_pressed(1):
+                #     # 2D translation mode
+                #     dpos[2] = 0    
+                drot_xyz = np.array([0.0, 0.0, 0.0])
                 drot = st.Rotation.from_euler('xyz', drot_xyz)
                 target_pose[:3] += dpos
                 target_pose[3:] = (drot * st.Rotation.from_rotvec(
                     target_pose[3:])).as_rotvec()
-
+                target_pose[3:] = np.array([0.0, -np.pi, 0.0])
+                target_pose[:2] = np.clip(target_pose[:2], [-0.30, 0.40], [0.38, 0.90])
                 # execute teleop command
+                print(f"[zyu] target_pose: {target_pose}")
                 env.exec_actions(
                     actions=[target_pose], 
                     timestamps=[t_command_target-time.monotonic()+time.time()],
-                    stages=[stage])
+                    stages=None)
                 precise_wait(t_cycle_end)
                 iter_idx += 1
 

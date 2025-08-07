@@ -131,12 +131,14 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
 
         # create diffusion model
         obs_feature_dim = obs_encoder.output_shape()[0]
+        print(f"[zyu] obs_encoder.output_shape is {obs_encoder.output_shape()}")
+        print(f"[zyu] n_obs_steps is {n_obs_steps}")
         input_dim = action_dim + obs_feature_dim
         global_cond_dim = None
         if obs_as_global_cond:
             input_dim = action_dim
             global_cond_dim = obs_feature_dim * n_obs_steps
-
+        print(f"[zyu] global_cond_dim is {global_cond_dim}")
         model = ConditionalUnet1D(
             input_dim=input_dim,
             local_cond_dim=None,
@@ -190,7 +192,6 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             dtype=condition_data.dtype,
             device=condition_data.device,
             generator=generator)
-        print(f'[zyu] trajectory shape: {trajectory.shape}')
         # set step values
         scheduler.set_timesteps(self.num_inference_steps)
 
@@ -243,7 +244,9 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         if self.obs_as_global_cond:
             # condition through global feature
             this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
+            print(f"[zyu] this_nobs shape: {[item.shape for item in this_nobs.values()]}")
             nobs_features = self.obs_encoder(this_nobs)
+            print(f"[zyu] nobs_features shape: {nobs_features.shape}")
             # reshape back to B, Do
             global_cond = nobs_features.reshape(B, -1)
             # empty data for action
@@ -261,7 +264,6 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             cond_mask[:,:To,Da:] = True
         end_time = time.perf_counter()
         print(f"zyu obs encoder time {end_time - start_time}")
-
         # run sampling
         # Real inference
         nsample = self.conditional_sample(
@@ -280,8 +282,6 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         end = start + self.n_action_steps
         action = action_pred[:,start:end]
         
-        print(f'[zyu] action shape: {action.shape}')
-        print(f'[zyu] action_pred shape: {action_pred.shape}')
         result = {
             'action': action,
             'action_pred': action_pred

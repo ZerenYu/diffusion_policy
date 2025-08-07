@@ -62,7 +62,7 @@ def real_data_to_replay_buffer(
     assert in_video_dir.is_dir()
     
     in_replay_buffer = ReplayBuffer.create_from_path(str(in_zarr_path.absolute()), mode='r')
-
+    print(f'[zyu] in_replay_buffer: {in_replay_buffer}')
     # save lowdim data to single chunk
     chunks_map = dict()
     compressor_map = dict()
@@ -78,7 +78,7 @@ def real_data_to_replay_buffer(
         chunks=chunks_map,
         compressors=compressor_map
         )
-    
+    print(f'[zyu] out_replay_buffer: {out_replay_buffer}')
     # worker function
     def put_img(zarr_arr, zarr_idx, img):
         try:
@@ -108,6 +108,8 @@ def real_data_to_replay_buffer(
     episode_lengths = in_replay_buffer.episode_lengths
     timestamps = in_replay_buffer['timestamp'][:]
     dt = timestamps[1] - timestamps[0]
+    print(f'[zyu] {in_replay_buffer.data.action[0]=}')
+    print(f'[zyu] {in_replay_buffer.episode_ends[:]=}')
 
     with tqdm(total=n_steps*n_cameras, desc="Loading image data", mininterval=1.0) as pbar:
         # one chunk per thread, therefore no synchronization needed

@@ -43,6 +43,7 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.common.cv2_util import get_image_transform
+from controllers.joystick.joystick_control import JoystickInterface, JoystickAxis, JoystickButton
 
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -144,6 +145,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
     print("action_offset:", action_offset)
 
     with SharedMemoryManager() as shm_manager:
+        joystick = JoystickInterface()
         with RealEnv(
             output_dir=output, 
             robot_ip=robot_ip, 
@@ -160,24 +162,33 @@ def main(input, output, robot_ip, match_dataset, match_episode,
             video_crf=21,
             shm_manager=shm_manager) as env:
             cv2.setNumThreads(1)
+            
+            # Initialize joystick
+            if not joystick.connect_device(0):
+                print("No joystick found. Exiting.")
+                joystick.cleanup()
+                return
+            print("Joystick connected.")
 
             # Should be the same as demo
             # realsense exposure
-            env.realsense.set_exposure(exposure=120, gain=0)
+            # env.realsense.set_exposure(exposure=120, gain=0)
             # realsense white balance
-            env.realsense.set_white_balance(white_balance=5900)
+            # env.realsense.set_white_balance(white_balance=5900)
 
             print("Waiting for realsense")
             time.sleep(1.0)
 
             print("Warming up policy inference")
             obs = env.get_obs()
+            print(f"[zyu] obs is {obs.keys()} shape_meta is {cfg.task.shape_meta}")
             with torch.no_grad():
                 policy.reset()
                 obs_dict_np = get_real_obs_dict(
                     env_obs=obs, shape_meta=cfg.task.shape_meta)
                 obs_dict = dict_apply(obs_dict_np, 
                     lambda x: torch.from_numpy(x).unsqueeze(0).to(device))
+                print(f"[zyu] obs_dict is {obs_dict.keys()}")
                 result = policy.predict_action(obs_dict)
                 action = result['action'][0].detach().to('cpu').numpy()
                 assert action.shape[-1] == 2
@@ -232,6 +243,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     if key_stroke == ord('q'):
                         # Exit program
                         env.end_episode()
+                        joystick.cleanup()
                         exit(0)
                     elif key_stroke == ord('c'):
                         # Exit human control loop
@@ -240,27 +252,25 @@ def main(input, output, robot_ip, match_dataset, match_episode,
 
                     precise_wait(t_sample)
                     # get teleop command
-                    sm_state = sm.get_motion_state_transformed()
-                    # print(sm_state)
-                    dpos = sm_state[:3] * (env.max_pos_speed / frequency)
-                    drot_xyz = sm_state[3:] * (env.max_rot_speed / frequency)
-  
-                    if not sm.is_button_pressed(0):
-                        # translation mode
-                        drot_xyz[:] = 0
+                    joystick_state = joystick.read_state(0)
+                    # print(joystick_state)
+                    x_pos = joystick_state.axes.get(JoystickAxis.LEFT_X.value, 0.0) * (env.max_pos_speed / frequency)
+                    y_pos = joystick_state.axes.get(JoystickAxis.LEFT_Y.value, 0.0) * (env.max_pos_speed / frequency)
+                    if joystick_state.buttons.get(JoystickButton.BACK.value, False):
+                        z_pos = -(env.max_pos_speed / frequency)
+                    elif joystick_state.buttons.get(JoystickButton.START.value, False):
+                        z_pos = (env.max_pos_speed / frequency)
                     else:
-                        dpos[:] = 0
-                    if not sm.is_button_pressed(1):
-                        # 2D translation mode
-                        dpos[2] = 0    
+                        z_pos = 0.0
+                    dpos = np.array([x_pos, y_pos, z_pos])
+                    drot_xyz = np.array([0.0, 0.0, 0.0])  # No rotation for now    
 
                     drot = st.Rotation.from_euler('xyz', drot_xyz)
                     target_pose[:3] += dpos
                     target_pose[3:] = (drot * st.Rotation.from_rotvec(
                         target_pose[3:])).as_rotvec()
                     # clip target pose
-                    target_pose[:2] = np.clip(target_pose[:2], [0.25, -0.45], [0.77, 0.40])
-
+                    target_pose[:2] = np.clip(target_pose[:2], [-0.30, 0.40], [0.38, 0.90])
                     # execute teleop command
                     env.exec_actions(
                         actions=[target_pose], 
@@ -341,7 +351,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
 
                         # clip actions
                         this_target_poses[:,:2] = np.clip(
-                            this_target_poses[:,:2], [0.25, -0.45], [0.77, 0.40])
+                            this_target_poses[:,:2], [-0.30, 0.40], [0.38, 0.90])
 
                         # execute actions
                         env.exec_actions(
@@ -411,7 +421,10 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     print("Interrupted!")
                     # stop robot.
                     env.end_episode()
+                    joystick.cleanup()
                 
+                # Cleanup joystick
+                joystick.cleanup()
                 print("Stopped.")
 
 
