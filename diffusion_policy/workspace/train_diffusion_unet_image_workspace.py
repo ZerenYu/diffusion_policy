@@ -170,7 +170,12 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         # compute loss
                         raw_loss = self.model.compute_loss(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
-                        loss.backward()
+                        
+                        try:
+                            loss.backward()
+                        except Exception as e:
+                            print(f"batch_idx: {batch_idx}")
+                            raise e
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:

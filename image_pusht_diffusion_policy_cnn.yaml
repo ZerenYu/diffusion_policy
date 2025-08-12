@@ -12,7 +12,7 @@ dataloader:
   num_workers: 8
   persistent_workers: false
   pin_memory: true
-  shuffle: true
+  shuffle: false
 dataset_obs_steps: 2
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel

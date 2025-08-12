@@ -217,6 +217,7 @@ class ReplayBuffer:
         Copy a on-disk zarr to in-memory compressed.
         Recommended
         """
+        print(f"[zyu] call copy_from_path")
         if backend == 'numpy':
             print('backend argument is deprecated!')
             store = None

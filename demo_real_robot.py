@@ -20,6 +20,7 @@ from multiprocessing.managers import SharedMemoryManager
 import click
 import cv2
 import numpy as np
+import os
 import scipy.spatial.transform as st
 from diffusion_policy.real_world.real_env import RealEnv
 from diffusion_policy.common.precise_sleep import precise_wait
@@ -33,6 +34,8 @@ from controllers.joystick.joystick_control import JoystickInterface, JoystickAxi
 @click.option('--frequency', '-f', default=10, type=float, help="Control frequency in Hz.")
 @click.option('--command_latency', '-cl', default=0.01, type=float, help="Latency between receiving SapceMouse command to executing on Robot in Sec.")
 def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_latency):
+    output_prefix = "/tmp/diffusion_policy"
+    output = os.path.join(output_prefix, output)
     dt = 1/frequency
     with SharedMemoryManager() as shm_manager:
         joystick = JoystickInterface()
@@ -121,16 +124,17 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                     print(f"[zyu] recording")
                 else:
                     print(f"[zyu] stopping")
-                cv2.putText(
-                    vis_img,
-                    text,
-                    (10,30),
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                    fontScale=1,
-                    thickness=2,
-                    color=(255,255,255)
-                )
-                cv2.imshow('default', vis_img)
+                # Take out for script server useage
+                # cv2.putText(
+                #     vis_img,
+                #     text,
+                #     (10,30),
+                #     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                #     fontScale=1,
+                #     thickness=2,
+                #     color=(255,255,255)
+                # )
+                # cv2.imshow('default', vis_img)
                 precise_wait(t_sample) 
             
 

@@ -50,6 +50,7 @@ class Trainer:
         if torch.cuda.is_available():
             self.device = torch.cuda.current_device()
             self.model = torch.nn.DataParallel(self.model).to(self.device)
+            torch.autograd.set_detect_anomaly(True)
 
     def save_checkpoint(self):
         # DataParallel wrappers keep raw model object in .module attribute
@@ -89,6 +90,7 @@ class Trainer:
 
                     # backprop and update the parameters
                     model.zero_grad()
+                    print(f"[zyu] loss: {loss}")
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(
                         model.parameters(), config.grad_norm_clip

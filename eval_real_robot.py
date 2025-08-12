@@ -229,30 +229,28 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         vis_img = np.minimum(vis_img, match_img)
 
                     text = f'Episode: {episode_id}'
-                    cv2.putText(
-                        vis_img,
-                        text,
-                        (10,20),
-                        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                        fontScale=0.5,
-                        thickness=1,
-                        color=(255,255,255)
-                    )
-                    cv2.imshow('default', vis_img[...,::-1])
-                    key_stroke = cv2.pollKey()
-                    if key_stroke == ord('q'):
+                    
+                    # cv2.putText(
+                    #     vis_img,
+                    #     text,
+                    #     (10,20),
+                    #     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                    #     fontScale=0.5,
+                    #     thickness=1,
+                    #     color=(255,255,255)
+                    # )
+                    joystick_state = joystick.read_state(0)
+                    if joystick_state.buttons.get(JoystickButton.A.value, False):
+                        # Exit human control loop
+                        # hand control over to the policy
+                        break
+                    elif joystick_state.buttons.get(JoystickButton.B.value, False):
                         # Exit program
                         env.end_episode()
                         joystick.cleanup()
                         exit(0)
-                    elif key_stroke == ord('c'):
-                        # Exit human control loop
-                        # hand control over to the policy
-                        break
 
-                    precise_wait(t_sample)
-                    # get teleop command
-                    joystick_state = joystick.read_state(0)
+
                     # print(joystick_state)
                     x_pos = joystick_state.axes.get(JoystickAxis.LEFT_X.value, 0.0) * (env.max_pos_speed / frequency)
                     y_pos = joystick_state.axes.get(JoystickAxis.LEFT_Y.value, 0.0) * (env.max_pos_speed / frequency)
@@ -366,20 +364,20 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         text = 'Episode: {}, Time: {:.1f}'.format(
                             episode_id, time.monotonic() - t_start
                         )
-                        cv2.putText(
-                            vis_img,
-                            text,
-                            (10,20),
-                            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                            fontScale=0.5,
-                            thickness=1,
-                            color=(255,255,255)
-                        )
-                        cv2.imshow('default', vis_img[...,::-1])
+                        # cv2.putText(
+                        #     vis_img,
+                        #     text,
+                        #     (10,20),
+                        #     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                        #     fontScale=0.5,
+                        #     thickness=1,
+                            # color=(255,255,255)
+                        # )
+                        # cv2.imshow('default', vis_img[...,::-1])
 
 
-                        key_stroke = cv2.pollKey()
-                        if key_stroke == ord('s'):
+                        joystick_state = joystick.read_state(0)
+                        if joystick_state.buttons.get(JoystickButton.B.value, False):
                             # Stop episode
                             # Hand control back to human
                             env.end_episode()
