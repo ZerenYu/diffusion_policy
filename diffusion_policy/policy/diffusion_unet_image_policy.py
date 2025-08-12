@@ -238,7 +238,13 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
         loss_mask = ~condition_mask
 
         # apply conditioning
-        noisy_trajectory[condition_mask] = cond_data[condition_mask]
+        try:
+            noisy_trajectory[condition_mask] = cond_data[condition_mask]
+        except Exception as e:
+            print(f"[zyu] condition_mask: {condition_mask.shape} cond_data: {cond_data.shape}")
+            print(f"[zyu] noisy_trajectory: {noisy_trajectory}")
+            print(f"[zyu] cond_data: {cond_data}")
+            raise e
         
         # Predict the noise residual
         pred = self.model(noisy_trajectory, timesteps, 
