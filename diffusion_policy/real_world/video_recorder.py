@@ -2,6 +2,8 @@ from typing import Optional, Callable, Generator
 import numpy as np
 import av
 from diffusion_policy.common.timestamp_accumulator import get_accumulate_timestamp_idxs
+import os
+import cv2
 
 def read_video(
         video_path: str, dt: float,
@@ -71,6 +73,8 @@ class VideoRecorder:
         self.dtype = None
         self.start_time = None
         self.next_global_idx = 0
+        self.depth_frame_idx = 0
+        self.depth_dir = None
     
     @classmethod
     def create_h264(cls,
@@ -96,6 +100,33 @@ class VideoRecorder:
         return obj
 
 
+    @classmethod
+    def create_gray10(cls,
+            fps,
+            codec='ffv1',
+            input_pix_fmt='gray16le',
+            output_pix_fmt='gray10le',
+            **kwargs
+        ):
+        """
+        Configure a recorder for 10-bit single-channel (grayscale) video.
+
+        - input_pix_fmt: use 'gray16le' for numpy arrays with dtype=uint16.
+          Provide values in the 10-bit range [0, 1023]; they will be handled
+          appropriately when encoding to 10-bit output.
+        - output_pix_fmt: 'gray10le' ensures 10-bit depth in the encoded stream.
+        - codec: defaults to 'ffv1' for broad support of 10-bit grayscale.
+        """
+        obj = cls(
+            fps=fps,
+            codec=codec,
+            input_pix_fmt=input_pix_fmt,
+            pix_fmt=output_pix_fmt,
+            **kwargs
+        )
+        return obj
+
+
     def __del__(self):
         self.stop()
 
@@ -113,6 +144,10 @@ class VideoRecorder:
         for k, v in self.kwargs.items():
             setattr(codec_context, k, v)
         self.start_time = start_time
+        
+        video_dir = os.path.dirname(file_path)
+        self.depth_dir = os.path.join(video_dir, 'depth')
+        os.makedirs(self.depth_dir, exist_ok=True)
     
     def write_frame(self, img: np.ndarray, frame_time=None):
         if not self.is_ready():
@@ -134,7 +169,13 @@ class VideoRecorder:
         if self.shape is None:
             self.shape = img.shape
             self.dtype = img.dtype
-            h,w,c = img.shape
+            # Support both grayscale (H, W) and color (H, W, C)
+            if img.ndim == 2:
+                h, w = img.shape
+            elif img.ndim == 3:
+                h, w, _ = img.shape
+            else:
+                raise ValueError('Unsupported image shape: {}'.format(img.shape))
             self.stream.width = w
             self.stream.height = h
         assert img.shape == self.shape
@@ -145,6 +186,14 @@ class VideoRecorder:
         for i in range(n_repeats):
             for packet in self.stream.encode(frame):
                 self.container.mux(packet)
+
+    def write_depth_frame(self, img: np.ndarray, frame_time=None):
+        if not self.is_ready():
+            raise RuntimeError('Must run start() before writing!')
+        
+        filepath = os.path.join(self.depth_dir, f'{self.depth_frame_idx:06d}.png')
+        cv2.imwrite(filepath, img)
+        self.depth_frame_idx += 1
 
     def stop(self):
         if not self.is_ready():

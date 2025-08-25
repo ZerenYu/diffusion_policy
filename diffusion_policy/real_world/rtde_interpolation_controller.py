@@ -17,6 +17,8 @@ class Command(enum.Enum):
     STOP = 0
     SERVOL = 1
     SCHEDULE_WAYPOINT = 2
+    TEACH_MODE = 3
+    END_TEACH_MODE = 4
 
 
 class RTDEInterpolationController(mp.Process):
@@ -41,7 +43,7 @@ class RTDEInterpolationController(mp.Process):
             joints_init=None,
             joints_init_speed=1.05,
             soft_real_time=False,
-            verbose=False,
+            verbose=True,
             receive_keys=None,
             get_max_k=128,
             ):
@@ -200,6 +202,20 @@ class RTDEInterpolationController(mp.Process):
         }
         self.input_queue.put(message)
 
+    def teach_mode(self):
+        assert self.is_alive()
+        message = {
+            'cmd': Command.TEACH_MODE.value
+        }
+        self.input_queue.put(message)
+
+    def end_teach_mode(self):
+        assert self.is_alive()
+        message = {
+            'cmd': Command.END_TEACH_MODE.value
+        }
+        self.input_queue.put(message)
+
     # ========= receive APIs =============
     def get_state(self, k=None, out=None):
         if k is None:
@@ -264,11 +280,11 @@ class RTDEInterpolationController(mp.Process):
                 pose_command = pose_interp(t_now)
                 vel = 0.5
                 acc = 0.5
-                assert rtde_c.servoL(pose_command, 
-                    vel, acc, # dummy, not used by ur5
-                    dt, 
-                    self.lookahead_time, 
-                    self.gain)
+                # assert rtde_c.servoL(pose_command, 
+                #     vel, acc, # dummy, not used by ur5
+                #     dt, 
+                #     self.lookahead_time, 
+                #     self.gain)
                 
                 # update robot state
                 state = dict()
@@ -330,6 +346,10 @@ class RTDEInterpolationController(mp.Process):
                             last_waypoint_time=last_waypoint_time
                         )
                         last_waypoint_time = target_time
+                    elif cmd == Command.TEACH_MODE.value:
+                        rtde_c.teachMode()
+                    elif cmd == Command.END_TEACH_MODE.value:
+                        rtde_c.endTeachMode()
                     else:
                         keep_running = False
                         break

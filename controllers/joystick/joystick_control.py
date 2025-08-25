@@ -10,15 +10,15 @@ class JoystickButton(Enum):
     """Standard joystick button mappings"""
     A = 0
     B = 1
-    X = 2
-    Y = 3
-    LEFT_BUMPER = 4
-    RIGHT_BUMPER = 5
-    BACK = 6
-    START = 7
-    LEFT_STICK = 8
-    RIGHT_STICK = 9
-    MANU = 11
+    X = 3
+    Y = 4
+    LEFT_BUMPER = 6
+    RIGHT_BUMPER = 7
+    BACK = 10
+    START = 11
+    LEFT_STICK = 13
+    RIGHT_STICK = 14
+    MANU = 18
 
 
 class JoystickAxis(Enum):
