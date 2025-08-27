@@ -100,7 +100,8 @@ class RealEnv:
             color_transform = lambda x: color_tf(x).astype(np.float32) / 255
 
         def transform(data):
-            data['color'] = color_transform(data['color'])
+            if 'color' in data:
+                data['color'] = color_transform(data['color'])
             return data
         
         rw, rh, col, row = optimal_row_cols(
@@ -114,7 +115,8 @@ class RealEnv:
             bgr_to_rgb=False
         )
         def vis_transform(data):
-            data['color'] = vis_color_transform(data['color'])
+            if 'color' in data:
+                data['color'] = vis_color_transform(data['color'])
             return data
 
         recording_transfrom = None
@@ -165,7 +167,7 @@ class RealEnv:
                 put_downsample=False,
                 record_fps=recording_fps,
                 enable_color=True,
-                enable_depth=False,
+                enable_depth=True,
                 get_max_k=max_obs_buffer_size,
                 transform=transform,
                 vis_transform=vis_transform,
@@ -385,9 +387,80 @@ class RealEnv:
                 new_stages,
                 new_timestamps
             )
+
+    def record_actions(self,
+            grasp_state: bool,
+            actions: Optional[np.ndarray]=None,
+            timestamps: Optional[np.ndarray]=None,
+            stages: Optional[np.ndarray]=None):
+        """
+        Record actions and stages with the exact same semantics and format as exec_actions
+        but without scheduling any waypoints to the robot. Useful for teach/drag mode.
+        """
+        assert self.is_ready
+        # default to current time if not provided
+        if timestamps is None:
+            timestamps = np.array([time.time()], dtype=np.float64)
+        elif not isinstance(timestamps, np.ndarray):
+            timestamps = np.array(timestamps)
+        if stages is None:
+            stages = np.zeros_like(timestamps, dtype=np.int64)
+        elif not isinstance(stages, np.ndarray):
+            stages = np.array(stages, dtype=np.int64)
+
+        # keep identical timestamp gating behavior as exec_actions
+        receive_time = time.time()
+        is_new = timestamps > receive_time
+        new_timestamps = timestamps[is_new]
+        new_stages = stages[is_new]
+
+        # derive actions from robot state if not provided
+        if actions is None:
+            # pull latest robot buffer and align by timestamps
+            last_robot_data = self.robot.get_all_state()
+            robot_ts = last_robot_data['robot_receive_timestamp']
+            idxs = list()
+            for t in new_timestamps:
+                before = np.nonzero(robot_ts < t)[0]
+                idx = 0
+                if len(before) > 0:
+                    idx = before[-1]
+                idxs.append(idx)
+            # use ActualTCPPose as low-dim action in teach mode
+            actual_pose = last_robot_data.get('ActualTCPPose')
+            if actual_pose is None:
+                raise RuntimeError('ActualTCPPose not available in robot state.')
+            new_actions = actual_pose[idxs]
+            # Add grasp_state to the end of new_actions to make shape (1, 7)
+            grasp_val = int(grasp_state)
+            # If new_actions has more than one row, broadcast grasp_val
+            grasp_col = np.full((new_actions.shape[0], 1), grasp_val, dtype=new_actions.dtype)
+            new_actions = np.concatenate([new_actions, grasp_col], axis=1)
+        else:
+            if not isinstance(actions, np.ndarray):
+                actions = np.array(actions)
+            new_actions = actions[is_new]
+
+        # record actions only (no robot commands)
+        if self.action_accumulator is not None:
+            self.action_accumulator.put(
+                new_actions,
+                new_timestamps
+            )
+        if self.stage_accumulator is not None:
+            self.stage_accumulator.put(
+                new_stages,
+                new_timestamps
+            )
     
     def get_robot_state(self):
         return self.robot.get_state()
+
+    def teach_mode(self):
+        self.robot.teach_mode()
+
+    def end_teach_mode(self):
+        self.robot.end_teach_mode()
 
     # recording API
     def start_episode(self, start_time=None):

@@ -196,7 +196,7 @@ class SingleOrbbec(mp.Process):
         except Exception as e:
             if self.verbose:
                 print(f"Failed to get software align config: {e}")
-            return None
+            raise
 
         return config
     
@@ -351,7 +351,6 @@ class SingleOrbbec(mp.Process):
 
         try:
             pipeline.start(config)
-            align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
             # Initialize intrinsics extraction flag
             intrinsics_extracted = False
             
@@ -485,6 +484,9 @@ class SingleOrbbec(mp.Process):
 
                 if self.video_recorder.is_ready() and 'color' in rec_data:
                     self.video_recorder.write_frame(rec_data['color'], 
+                        frame_time=receive_time)
+                if self.video_recorder.is_ready() and 'depth' in rec_data:
+                    self.video_recorder.write_depth_frame(rec_data['depth'], 
                         frame_time=receive_time)
 
                 # perf
