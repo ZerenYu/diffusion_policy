@@ -85,7 +85,6 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
             model_output = model(trajectory, t, 
                 local_cond=local_cond, global_cond=global_cond)
             time_end = time.perf_counter()
-            print(f"zyu diffusion run time {model_output.shape} {time_end - time_start}")
             # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(
                 model_output, t, trajectory, 

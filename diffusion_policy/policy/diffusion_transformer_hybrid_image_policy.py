@@ -331,7 +331,7 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
             time_start = time.perf_counter()
             nobs_features = self.obs_encoder(this_nobs)
             time_end = time.perf_counter()
-            print(f"zyu obs as cond encoder time {time_end - time_start}")
+
             # reshape back to B, T, Do
             cond = nobs_features.reshape(batch_size, To, -1)
             if self.pred_action_steps_only:
@@ -378,7 +378,6 @@ class DiffusionTransformerHybridImagePolicy(BaseImagePolicy):
         time_start = time.perf_counter()
         pred = self.model(noisy_trajectory, timesteps, cond)
         time_end = time.perf_counter()
-        print(f"zyu diffusion run time {pred.shape} {time_end - time_start}")
 
         pred_type = self.noise_scheduler.config.prediction_type 
         if pred_type == 'epsilon':
