@@ -161,9 +161,6 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
                         batch_keys = batch.keys()
-                        print(f"[zyu] what's in a batch: {batch_keys}")
-                        print(f"[zyu] batch['action'] shape: {batch['action'].shape}")
-                        print(f"[zyu] batch['obs'] shape: {batch['obs'].keys()}")
                         # compute loss
                         raw_loss = self.model.compute_loss(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
