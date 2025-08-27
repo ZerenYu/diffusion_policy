@@ -73,6 +73,7 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
             is_recording = False
             delete_episode = 0
             grasp_state = False
+            back_off = False
             while not stop:
                 # calculate timing
                 t_cycle_end = t_start + (iter_idx + 1) * dt
@@ -118,7 +119,17 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 elif joystick_state.buttons.get(JoystickButton.Y.value, False):
                     grasp_state = False
                     gripper.release(speed=500)
-                        
+                elif joystick_state.buttons.get(JoystickButton.START.value, False):
+                    back_off = True
+                elif joystick_state.buttons.get(JoystickButton.BACK.value, False) and back_off:
+                    env.teach_mode()
+                    env.exec_actions(
+                        actions=np.array([[0.63607254,-0.10641178, 0.86899057, 0.06008457, 2.00834444, 0.04974522]]),
+                        timestamps=[3+time.time()]
+                    )
+                    env.end_teach_mode()
+                    back_off = False
+                # print(f"[zyu] timestamp now: {time.time()} {t_command_target-time.monotonic()+time.time()}")
                 precise_wait(t_sample)  
                 
                 # visualize

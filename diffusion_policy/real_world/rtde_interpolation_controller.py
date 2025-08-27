@@ -20,7 +20,6 @@ class Command(enum.Enum):
     TEACH_MODE = 3
     END_TEACH_MODE = 4
 
-
 class RTDEInterpolationController(mp.Process):
     """
     To ensure sending command to the robot with predictable latency
@@ -268,6 +267,7 @@ class RTDEInterpolationController(mp.Process):
             
             iter_idx = 0
             keep_running = True
+            in_teach_mode = False
             while keep_running:
                 # start control iteration
                 t_start = rtde_c.initPeriod()
@@ -280,11 +280,12 @@ class RTDEInterpolationController(mp.Process):
                 pose_command = pose_interp(t_now)
                 vel = 0.5
                 acc = 0.5
-                # assert rtde_c.servoL(pose_command, 
-                #     vel, acc, # dummy, not used by ur5
-                #     dt, 
-                #     self.lookahead_time, 
-                #     self.gain)
+                # if not in_teach_mode:
+                #     assert rtde_c.servoL(pose_command, 
+                #         vel, acc, # dummy, not used by ur5
+                #         dt, 
+                #         self.lookahead_time, 
+                #         self.gain)
                 
                 # update robot state
                 state = dict()
@@ -347,9 +348,12 @@ class RTDEInterpolationController(mp.Process):
                         )
                         last_waypoint_time = target_time
                     elif cmd == Command.TEACH_MODE.value:
+                        time.sleep(2)
                         rtde_c.teachMode()
+                        in_teach_mode = True
                     elif cmd == Command.END_TEACH_MODE.value:
                         rtde_c.endTeachMode()
+                        in_teach_mode = False
                     else:
                         keep_running = False
                         break
